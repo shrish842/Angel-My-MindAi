@@ -1,0 +1,35 @@
+google-generativeai
+python-dotenv
+
+
+streamlit
+
+
+sentence-transformers         
+
+
+chromadb                      
+# faiss-cpu                   # Alternative powerful vector store (CPU version)
+# faiss-gpu                   # Alternative powerful vector store (GPU version, if applicable)
+
+# RAG - Helper Libraries (choose one if you decide to use them, LangChain is popular)
+langchain
+langchain-google-genai      # For LangChain integration with Gemini (LLM and Embeddings)
+langchain-community         # For community integrations like SentenceTransformer embeddings, ChromaDB etc.
+# llama-index                 # Alternative to LangChain
+
+# Utilities
+uuid                          # Built-in, but good to note for generating unique IDs
+
+# Optional for more advanced database interaction (if not just using built-in SQLite directly)
+# sqlalchemy                  # For using an ORM with SQLite or other databases
+# alembic                     # For database migrations if using SQLAlchemy
+
+# Optional for background tasks/scheduling (advanced reminder system)
+# apscheduler
+# celery
+# redis                       # If using Celery with Redis as a broker
+
+# Optional for nicer CLI if you maintain a CLI version alongside Streamlit
+# typer
+# click

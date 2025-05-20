@@ -1,0 +1,23 @@
+# Environment variables
+.env
+
+# Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# IDE-specific folders (add your own if needed)
+.vscode/
+.idea/
+
+# Virtual environment folder (if you create one in the project root)
+venv/
+.venv/
+
+chroma_db_store/
+my_personal_data.jsonl
