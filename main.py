@@ -1,3 +1,4 @@
+# main.py
 from src.assistant import run_assistant
 
 if __name__ == "__main__":
