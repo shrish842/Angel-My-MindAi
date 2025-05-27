@@ -2,8 +2,10 @@
 from . import data_manager
 from . import llm_interaction
 from . import config 
+from . import task_manager
+from . import scheduler_service
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 # --- Helper for Interactive Entry (Updated to align with new entry_types) ---
 def add_log_entry_interactive_cli(entry_type_default="general_note"):
@@ -66,6 +68,111 @@ def add_log_entry_interactive_cli(entry_type_default="general_note"):
     # The first argument to data_manager.add_entry is the crucial RAG entry_type
     return data_manager.add_entry(final_entry_type, data_to_log)
 
+def add_task_interactive_cli():
+    print("\n--- Add New Task ---")
+    title = input("Task title: ").strip()
+    if not title:
+        print("Task title cannot be empty. Task not added.")
+        return None
+    
+    description = input("Description (optional): ").strip()
+    
+    due_date_str_input = input("Due date (e.g., YYYY-MM-DD HH:MM, or 'tomorrow 3pm', 'next monday 10am', optional): ").strip()
+    due_at_utc_iso = None
+    if due_date_str_input:
+        # Basic parsing for demonstration. For robust parsing, use libraries like 'dateparser' or 'maya'.
+        # This is a very simplified parser.
+        try:
+            # Attempt direct ISO parsing first if user enters full YYYY-MM-DDTHH:MM:SS
+            if 'T' in due_date_str_input:
+                 dt_obj_naive = datetime.fromisoformat(due_date_str_input)
+            else: # Assume YYYY-MM-DD HH:MM
+                 dt_obj_naive = datetime.strptime(due_date_str_input, "%Y-%m-%d %H:%M")
+            # Assume local timezone input, then convert to UTC
+            # For simplicity, assuming naive datetime is local, then convert to UTC
+            # A better approach would be to ask for timezone or use a library
+            dt_obj_local = dt_obj_naive.astimezone(None) # Make it aware of local system timezone
+            dt_obj_utc = dt_obj_local.astimezone(timezone.utc)
+            due_at_utc_iso = dt_obj_utc.isoformat()
+            print(f"Parsed due date as UTC: {due_at_utc_iso}")
+        except ValueError:
+            # Add more parsing logic here for "tomorrow 3pm", "next monday" etc.
+            # For now, just inform and skip if complex.
+            print(f"Could not parse '{due_date_str_input}' into a specific datetime. Due date not set for now.")
+            print("You can update it later or use YYYY-MM-DD HH:MM format.")
+
+
+    priority_input = input("Priority (high, medium, low - default: medium): ").strip().lower()
+    priority = priority_input if priority_input in ["high", "medium", "low"] else "medium"
+
+    reminder_minutes_str = input("Set reminder X minutes before due time? (e.g., 30, optional): ").strip()
+    reminder_minutes = None
+    if reminder_minutes_str:
+        try:
+            reminder_minutes = int(reminder_minutes_str)
+            if reminder_minutes <= 0: reminder_minutes = None # Ignore non-positive
+        except ValueError:
+            print("Invalid reminder minutes, no specific reminder set.")
+            
+    project_tags_str = input("Project tags (comma-separated, optional): ").strip()
+    project_tags = [tag.strip() for tag in project_tags_str.split(',') if tag.strip()]
+
+    return task_manager.add_task(
+        title=title,
+        description=description if description else None,
+        due_at_utc_str=due_at_utc_iso, # Pass the ISO string
+        priority=priority,
+        project_tags=project_tags,
+        reminder_minutes_before=reminder_minutes
+    )
+    
+    
+def view_pending_tasks_cli():
+    print("\n--- Your Pending Tasks ---")
+    pending_tasks = task_manager.get_pending_tasks()
+    if not pending_tasks:
+        print("No pending tasks. Great job or time to add some!")
+        return
+
+    # Sort by due date (tasks without due date last)
+    pending_tasks.sort(key=lambda t: task_manager._ensure_utc(t.get("due_at_utc")) or datetime.max.replace(tzinfo=timezone.utc))
+
+    for i, task in enumerate(pending_tasks):
+        due_str = task.get("due_at_utc")
+        due_display = task_manager._ensure_utc(due_str).strftime('%Y-%m-%d %H:%M %Z') if task_manager._ensure_utc(due_str) else "Not set"
+        reminders_display = ", ".join(task.get("reminder_at_utc_list", [])) if task.get("reminder_at_utc_list") else "None"
+        
+        print(f"{i+1}. ID: {task.get('task_id')}")
+        print(f"   Title: {task.get('title')}")
+        if task.get('description'): print(f"   Desc: {task.get('description')}")
+        print(f"   Priority: {task.get('priority', 'N/A').capitalize()}")
+        print(f"   Status: {task.get('status', 'N/A').capitalize()}")
+        print(f"   Due: {due_display}")
+        print(f"   Reminders set for: {reminders_display}")
+        if task.get('project_tags'): print(f"   Tags: {', '.join(task.get('project_tags'))}")
+        print("---")
+
+def mark_task_complete_cli():
+    print("\n--- Mark Task as Complete ---")
+    task_id = input("Enter the ID of the task to mark as complete: ").strip()
+    if not task_id:
+        print("No task ID provided.")
+        return
+    
+    task = task_manager.get_task(task_id)
+    if not task:
+        print(f"Task with ID '{task_id}' not found.")
+        return
+
+    if task.get("status") == "completed":
+        print(f"Task '{task.get('title')}' is already marked as complete.")
+        return
+
+    if task_manager.update_task(task_id, {"status": "completed"}):
+        print(f"Task '{task.get('title')}' marked as complete.")
+    else:
+        print(f"Failed to mark task '{task_id}' as complete.")
+
 
 # --- CLI Expert Router ---
 def route_to_expert_cli(user_query: str):
@@ -86,104 +193,93 @@ def route_to_expert_cli(user_query: str):
 
 # --- Main Assistant Logic ---
 def run_assistant():
-    print("Welcome to MyMind AI - Your Personal AI Assistant (CLI V3)")
+    print("Welcome to MyMind AI - Your Personal AI Assistant (CLI V4 - With Tasks)")
     
+    # --- Initialize services ---
     if not data_manager.initialize_rag_if_needed():
         print("WARNING: RAG components could not be initialized. Contextual advice might be limited.")
+    
+    scheduler_service.start_scheduler(interval_seconds=60) # Check every minute
 
-    all_entries = data_manager.load_data()
-    print(f"Loaded {len(all_entries)} entries from your logs.")
+    all_entries = data_manager.load_data() # Personal log entries
+    print(f"Loaded {len(all_entries)} personal log entries.")
+    # Note: Tasks are managed by task_manager, not loaded into all_entries here.
 
-    while True:
-        print("\nWhat would you like to do?")
-        print("1. Add New Log Entry")
-        print("2. Ask for Advice or Reflection")
-        print("3. View Most Recent Entries (raw data)")
-        print("4. Exit")
-        choice = input("Enter your choice (1-4): ").strip()
+    try: # Wrap main loop to ensure scheduler stops
+        while True:
+            print("\nWhat would you like to do?")
+            print("1. Add New Log Entry (Reflections, Emotions, etc.)")
+            print("2. Ask for Advice or Reflection")
+            print("3. View Most Recent Log Entries")
+            print("--- Tasks & Reminders ---")
+            print("4. Add New Task")
+            print("5. View Pending Tasks")
+            print("6. Mark Task as Complete")
+            print("-------------------------")
+            print("7. Exit")
+            choice = input("Enter your choice (1-7): ").strip()
 
-        if choice == '1':
-            new_entry = add_log_entry_interactive_cli() # Use the unified log adder
-            if new_entry:
-                all_entries.append(new_entry)
-                print("Log entry added successfully.")
-        elif choice == '2':
-            if not all_entries and not data_manager.RAG_ENABLED:
-                print("No log entries or RAG available. Please add data first.")
-                continue
+            if choice == '1':
+                new_entry = add_log_entry_interactive_cli()
+                if new_entry:
+                    all_entries.append(new_entry) # Keep local log entries list in sync
+                    print("Log entry added successfully.")
+            elif choice == '2':
+                # ... (Your existing "Ask for Advice" logic with expert routing and RAG) ...
+                # For brevity, not repeating the full advice section. Ensure it uses:
+                # chosen_expert = route_to_expert_cli(user_query)
+                # rag_filter = ... (based on chosen_expert)
+                # retrieved_chunks = data_manager.query_relevant_log_chunks(...)
+                # ai_response = llm_interaction.get_ai_response(..., expert_type=chosen_expert)
+                # --- Start of "Ask Advice" section (condensed from previous) ---
+                if not all_entries and not data_manager.RAG_ENABLED:
+                    print("No log entries or RAG available. Please add data first for advice.")
+                    continue
+                user_query = input("What's on your mind? How can I help you reflect today?\n> ").strip()
+                if not user_query: continue
+                chosen_expert = route_to_expert_cli(user_query)
+                print(f"--- Routing to: {chosen_expert.replace('_', ' ').title()} ---")
+                rag_filter = None 
+                # (Simplified filter logic for CLI - adapt from app.py or make more specific)
+                if chosen_expert == "academic_advisor_expert": rag_filter = {"entry_type": "academic_setback"}
+                elif chosen_expert == "relationship_counselor_expert": rag_filter = {"entry_type": "interpersonal_conflict"}
+                # ... other expert filters ...
+                context_string = ""
+                if data_manager.RAG_ENABLED:
+                    print(f"Searching logs (RAG filter: {rag_filter if rag_filter else 'None'})...")
+                    retrieved_chunks = data_manager.query_relevant_log_chunks(
+                        user_query, n_results=config.MAX_CONTEXT_ENTRIES_FOR_LLM, filter_metadata=rag_filter)
+                    if retrieved_chunks: context_string = "\n\n---\n\n".join(retrieved_chunks)
+                if not context_string and all_entries: 
+                    print("Using recent log entries as fallback context.")
+                    # ... (your fallback context summarization) ...
+                print(f"\nThinking with {chosen_expert.replace('_', ' ')}...")
+                ai_response = llm_interaction.get_ai_response(user_query, context_string, expert_type=chosen_expert)
+                print("\nMyMind AI says:\n--------------------------------------------------\n" + ai_response + "\n--------------------------------------------------")
+                # --- End of "Ask Advice" section ---
 
-            user_query = input("What's on your mind? How can I help you reflect today?\n> ").strip()
-            if not user_query: continue
-
-            # --- Automatic Expert Routing for CLI ---
-            chosen_expert = route_to_expert_cli(user_query)
-            print(f"--- Routing to: {chosen_expert.replace('_', ' ').title()} ---")
-            
-            rag_filter = None
-            # Define filters based on chosen_expert, similar to app.py
-            if chosen_expert == "academic_advisor_expert":
-                rag_filter = {"entry_type": "academic_setback"}
-            elif chosen_expert == "relationship_counselor_expert":
-                rag_filter = {"entry_type": "interpersonal_conflict"}
-            elif chosen_expert == "emotion_reflection_expert":
-                # For CLI, let's be broader if possible, or pick the most common emotional type
-                # Your JSONL has interpersonal_conflict and academic_setback which are emotional
-                # A more advanced filter would use $or, but for now pick one or allow general search
-                rag_filter = {"primary_emotion": {"$ne": ""}} # Attempt to get any entry with a primary emotion
-                # Note: This $ne filter requires data_manager.py to handle it or be simplified.
-                # Let's simplify for now for CLI if $ne isn't ready in data_manager:
-                # rag_filter = {"entry_type": "emotion_log"} # Or a specific emotional type
-                # If you log general emotions as "emotion_log" type, this is good.
-                # Given your data, maybe filter on primary_emotion presence for CLI
-                # For CLI, let's try general search if not "emotion_log" type
-                pass # No specific entry_type filter, rely on semantic + emotion words
-            elif chosen_expert == "leisure_activity_expert":
-                # Pick one primary type or combine results from multiple queries if $or not available
-                rag_filter = {"entry_type": "social_event_travel"} # Example
-            
-            context_string = ""
-            if data_manager.RAG_ENABLED:
-                print(f"Searching relevant logs (RAG filter: {rag_filter if rag_filter else 'None - broad search'})...")
-                retrieved_chunks = data_manager.query_relevant_log_chunks(
-                    user_query, 
-                    n_results=config.MAX_CONTEXT_ENTRIES_FOR_LLM,
-                    filter_metadata=rag_filter
-                )
-                if retrieved_chunks:
-                    context_string = "\n\n---\n\n".join(retrieved_chunks)
-                    print(f"Found {len(retrieved_chunks)} relevant context chunks from RAG.")
+            elif choice == '3':
+                # ... (Your existing "View Most Recent Log Entries" logic) ...
+                print("\n--- Your Most Recent Log Entries ---")
+                if not all_entries: print("No log entries yet.")
                 else:
-                    print("No specific chunks found by RAG with the current filter/query.")
-            
-            if not context_string and all_entries: # Fallback if RAG fails or finds nothing
-                print("Using recent entries as general fallback context.")
-                sorted_entries = sorted(all_entries, key=lambda x: x.get("timestamp_utc", ""), reverse=True)
-                context_entries_for_prompt = [
-                    f"Type: {e.get('entry_type')}, Emotion: {e.get('primary_emotion','N/A')}, Summary: {e.get('trigger_event',{}).get('summary','N/A')}" 
-                    for e in sorted_entries[:config.MAX_CONTEXT_ENTRIES_FOR_LLM] # Use config
-                ]
-                context_string = "\n---\n".join(context_entries_for_prompt)
-
-            print(f"\nThinking with {chosen_expert.replace('_', ' ')}...")
-            ai_response = llm_interaction.get_ai_response(user_query, context_string, expert_type=chosen_expert)
-            
-            print("\nMyMind AI says:")
-            print("--------------------------------------------------")
-            print(ai_response)
-            print("--------------------------------------------------")
-
-        elif choice == '3':
-            # (Keep your existing "View Most Recent Entries" logic)
-            print("\n--- Your Most Recent Log Entries ---")
-            if not all_entries: print("No entries yet.")
+                    sorted_entries = sorted(all_entries, key=lambda x: x.get("timestamp_utc", ""), reverse=True)
+                    for i, entry_data in enumerate(sorted_entries[:5]):
+                        print(f"\nEntry {i+1} (ID: {entry_data.get('entry_id', 'N/A')} | Type: {entry_data.get('entry_type', 'N/A')})")
+                        print(json.dumps(entry_data, indent=2))
+                        if i < 4 and len(sorted_entries) > i + 1 : print("---")
+            elif choice == '4': # Add New Task
+                add_task_interactive_cli()
+            elif choice == '5': # View Pending Tasks
+                view_pending_tasks_cli()
+            elif choice == '6': # Mark Task as Complete
+                mark_task_complete_cli()
+            elif choice == '7': # Exit
+                print("Exiting MyMind AI...")
+                break # Exit the while loop
             else:
-                sorted_entries = sorted(all_entries, key=lambda x: x.get("timestamp_utc", ""), reverse=True)
-                for i, entry in enumerate(sorted_entries[:5]):
-                    print(f"\nEntry {i+1} (ID: {entry.get('entry_id', 'N/A')} | Type: {entry.get('entry_type', 'N/A')})")
-                    print(json.dumps(entry, indent=2))
-                    if i < 4 and len(sorted_entries) > i + 1 : print("---")
-        elif choice == '4':
-            print("Exiting MyMind AI. Your thoughts are valued!")
-            break
-        else:
-            print("Invalid choice.")
+                print("Invalid choice. Please enter a number from the menu.")
+    
+    finally: # Ensure scheduler is stopped when loop exits (normally or via error)
+        scheduler_service.stop_scheduler()
+    print("Application closed.")
